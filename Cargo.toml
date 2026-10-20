@@ -44,8 +44,8 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
 url = "2.3"
-hyper-rustls = { version = "0.27.1", optional = true }
-rustls = { version = "0.23.5", optional = true }
+hyper-rustls = { version = "0.27.1", optional = true, default-features = false, features = ["http1", "tls12", "logging"] }
+rustls = { version = "0.23.5", optional = true, default-features = false, features = ["std", "tls12", "logging"] }
 thiserror = "1.0"
 webpki-roots = { version = "0.26.1", optional = true }
 tower-service = "0.3"
