@@ -331,6 +331,74 @@ impl<C: Connect + Clone + Send + Sync + 'static> Pusher<C> {
             .await
     }
 
+    /// This method triggers up to 10 events, each on its own channel, in one
+    /// request. Pusher delivers the events of a batch in order.
+    ///
+    /// **Example:**
+    ///
+    /// ```
+    /// # use pusher::{BatchEvent, PusherBuilder};
+    /// # let pusher = PusherBuilder::new("id", "key", "secret").finalize();
+    /// let events = [
+    ///     BatchEvent { channel: "test_channel", event: "my_event", payload: "hello" },
+    ///     BatchEvent { channel: "test_channel2", event: "my_event", payload: "world" },
+    /// ];
+    /// pusher.trigger_batch(&events);
+    /// ```
+    pub async fn trigger_batch<S: serde::Serialize>(
+        &self,
+        events: &[BatchEvent<'_, S>],
+    ) -> Result<(), Error> {
+        if events.len() > 10 {
+            return Err(Error::TooManyEvents(events.len()));
+        }
+        let batch = events
+            .iter()
+            .map(|event| {
+                validate_event(event.event)?;
+                validate_channel(event.channel)?;
+                let data = serde_json::to_string(&event.payload).unwrap();
+                if data.len() > 10240 {
+                    return Err(Error::EventDataTooLarge(data.len()));
+                }
+                Ok(BatchEventData {
+                    name: event.event.to_string(),
+                    channel: event.channel.to_string(),
+                    data,
+                })
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+
+        let request_url_string = format!(
+            "{}://{}/apps/{}/batch_events",
+            self.scheme(),
+            self.host,
+            self.app_id
+        );
+        let mut request_url = Url::parse(&request_url_string).unwrap();
+        let body = serde_json::to_string(&TriggerBatchData { batch }).unwrap();
+
+        let method = "POST";
+        let query = build_query(
+            method,
+            request_url.path(),
+            &self.key,
+            &self.secret,
+            timestamp(),
+            Some(&body),
+            None,
+        );
+        request_url.set_query(Some(&query));
+        send_request::<C, serde::de::IgnoredAny>(
+            &self.http_client,
+            method,
+            request_url,
+            Some(body),
+        )
+        .await?;
+        Ok(())
+    }
+
     async fn _trigger<S: serde::Serialize>(
         &self,
         channels: Vec<String>,
@@ -832,6 +900,41 @@ mod tests {
 
         let res = pusher.trigger("yolo", "new_yolo", &data).await;
         assert!(matches!(res, Err(Error::EventDataTooLarge(_))));
+    }
+
+    #[tokio::test]
+    async fn test_batch_event_count_validation() {
+        let pusher = PusherBuilder::new("id", "key", "secret").finalize();
+        let events: Vec<_> = (0..11)
+            .map(|_| BatchEvent {
+                channel: "yolo",
+                event: "woot",
+                payload: "huh",
+            })
+            .collect();
+        let res = pusher.trigger_batch(&events).await;
+        assert!(matches!(res, Err(Error::TooManyEvents(11))));
+    }
+
+    #[tokio::test]
+    async fn test_batch_event_validation() {
+        let pusher = PusherBuilder::new("id", "key", "secret").finalize();
+        let data = "a".repeat(10241);
+        let oversized = [BatchEvent {
+            channel: "yolo",
+            event: "woot",
+            payload: &data,
+        }];
+        let res = pusher.trigger_batch(&oversized).await;
+        assert!(matches!(res, Err(Error::EventDataTooLarge(_))));
+
+        let bad_channel = [BatchEvent {
+            channel: "w000^$$",
+            event: "woot",
+            payload: "huh",
+        }];
+        let res = pusher.trigger_batch(&bad_channel).await;
+        assert!(matches!(res, Err(Error::InvalidChannelName(_))));
     }
 
     #[tokio::test]

@@ -8,7 +8,8 @@ extern crate yup_hyper_mock;
 
 use hyper::StatusCode;
 use hyper_util::{client::legacy::Client, rt::TokioExecutor};
-use pusher::{Error, PusherBuilder};
+use pusher::{BatchEvent, Error, PusherBuilder};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 mock_connector!(BadRequest {
     "http://127.0.0.1" =>       "HTTP/1.1 400 Bad Request\r\n\
@@ -121,4 +122,67 @@ async fn test_get_channel_users() {
     let user_two = &users[1];
     assert_eq!(user_one.id, "red");
     assert_eq!(user_two.id, "blue")
+}
+
+/// Answers one request with `{}` and returns its request line and body.
+async fn capture_one_request(listener: tokio::net::TcpListener) -> (String, String) {
+    let (mut socket, _) = listener.accept().await.unwrap();
+    let mut request = Vec::new();
+    let mut buffer = [0; 4096];
+    let (head_end, content_length) = loop {
+        let read = socket.read(&mut buffer).await.unwrap();
+        request.extend_from_slice(&buffer[..read]);
+        let text = String::from_utf8_lossy(&request);
+        if let Some(head_end) = text.find("\r\n\r\n") {
+            let content_length = text[..head_end]
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length: ")
+                        .map(|n| n.parse::<usize>().unwrap())
+                })
+                .unwrap_or(0);
+            break (head_end + 4, content_length);
+        }
+    };
+    while request.len() < head_end + content_length {
+        let read = socket.read(&mut buffer).await.unwrap();
+        request.extend_from_slice(&buffer[..read]);
+    }
+    socket
+        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+        .await
+        .unwrap();
+    let text = String::from_utf8(request).unwrap();
+    let request_line = text.lines().next().unwrap().to_string();
+    (request_line, text[head_end..].to_string())
+}
+
+#[tokio::test]
+async fn test_batch_trigger() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let host = listener.local_addr().unwrap().to_string();
+    let server = tokio::spawn(capture_one_request(listener));
+    let pusher = PusherBuilder::new("1", "2", "3").host(&host).finalize();
+
+    let events = [
+        BatchEvent {
+            channel: "first_channel",
+            event: "first",
+            payload: 1,
+        },
+        BatchEvent {
+            channel: "second_channel",
+            event: "second",
+            payload: 2,
+        },
+    ];
+    pusher.trigger_batch(&events).await.unwrap();
+
+    let (request_line, body) = server.await.unwrap();
+    assert!(request_line.starts_with("POST /apps/1/batch_events?"));
+    assert_eq!(
+        body,
+        r#"{"batch":[{"name":"first","channel":"first_channel","data":"1"},{"name":"second","channel":"second_channel","data":"2"}]}"#
+    );
 }

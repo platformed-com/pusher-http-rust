@@ -9,6 +9,25 @@ pub struct TriggerEventData {
     pub socket_id: Option<String>,
 }
 
+#[derive(Serialize)]
+pub struct TriggerBatchData {
+    pub batch: Vec<BatchEventData>,
+}
+
+#[derive(Serialize)]
+pub struct BatchEventData {
+    pub name: String,
+    pub channel: String,
+    pub data: String,
+}
+
+/// One event of a [`Pusher::trigger_batch`](crate::Pusher::trigger_batch) call.
+pub struct BatchEvent<'a, S> {
+    pub channel: &'a str,
+    pub event: &'a str,
+    pub payload: S,
+}
+
 /// When querying the state of Pusher channels, you can pass this in to specify
 /// options.
 pub type QueryParameters = Vec<(String, String)>;
