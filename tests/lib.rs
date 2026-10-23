@@ -131,6 +131,7 @@ async fn capture_one_request(listener: tokio::net::TcpListener) -> (String, Stri
     let mut buffer = [0; 4096];
     let (head_end, content_length) = loop {
         let read = socket.read(&mut buffer).await.unwrap();
+        assert_ne!(read, 0, "connection closed before the request was complete");
         request.extend_from_slice(&buffer[..read]);
         let text = String::from_utf8_lossy(&request);
         if let Some(head_end) = text.find("\r\n\r\n") {
@@ -147,6 +148,7 @@ async fn capture_one_request(listener: tokio::net::TcpListener) -> (String, Stri
     };
     while request.len() < head_end + content_length {
         let read = socket.read(&mut buffer).await.unwrap();
+        assert_ne!(read, 0, "connection closed before the request was complete");
         request.extend_from_slice(&buffer[..read]);
     }
     socket
@@ -170,11 +172,13 @@ async fn test_batch_trigger() {
             channel: "first_channel",
             event: "first",
             payload: 1,
+            socket_id: None,
         },
         BatchEvent {
-            channel: "second_channel",
+            channel: "first_channel",
             event: "second",
             payload: 2,
+            socket_id: Some("123.45"),
         },
     ];
     pusher.trigger_batch(&events).await.unwrap();
@@ -183,6 +187,6 @@ async fn test_batch_trigger() {
     assert!(request_line.starts_with("POST /apps/1/batch_events?"));
     assert_eq!(
         body,
-        r#"{"batch":[{"name":"first","channel":"first_channel","data":"1"},{"name":"second","channel":"second_channel","data":"2"}]}"#
+        r#"{"batch":[{"name":"first","channel":"first_channel","data":"1"},{"name":"second","channel":"first_channel","data":"2","socket_id":"123.45"}]}"#
     );
 }

@@ -331,8 +331,8 @@ impl<C: Connect + Clone + Send + Sync + 'static> Pusher<C> {
             .await
     }
 
-    /// This method triggers up to 10 events, each on its own channel, in one
-    /// request. Pusher delivers the events of a batch in order.
+    /// This method triggers up to 10 events in one request; several may share
+    /// a channel. Pusher delivers the events of a batch in order.
     ///
     /// **Example:**
     ///
@@ -340,8 +340,8 @@ impl<C: Connect + Clone + Send + Sync + 'static> Pusher<C> {
     /// # use pusher::{BatchEvent, PusherBuilder};
     /// # let pusher = PusherBuilder::new("id", "key", "secret").finalize();
     /// let events = [
-    ///     BatchEvent { channel: "test_channel", event: "my_event", payload: "hello" },
-    ///     BatchEvent { channel: "test_channel2", event: "my_event", payload: "world" },
+    ///     BatchEvent { channel: "test_channel", event: "my_event", payload: "hello", socket_id: None },
+    ///     BatchEvent { channel: "test_channel", event: "my_event", payload: "world", socket_id: Some("123.12") },
     /// ];
     /// pusher.trigger_batch(&events);
     /// ```
@@ -349,6 +349,9 @@ impl<C: Connect + Clone + Send + Sync + 'static> Pusher<C> {
         &self,
         events: &[BatchEvent<'_, S>],
     ) -> Result<(), Error> {
+        if events.is_empty() {
+            return Ok(());
+        }
         if events.len() > 10 {
             return Err(Error::TooManyEvents(events.len()));
         }
@@ -357,6 +360,9 @@ impl<C: Connect + Clone + Send + Sync + 'static> Pusher<C> {
             .map(|event| {
                 validate_event(event.event)?;
                 validate_channel(event.channel)?;
+                if let Some(socket_id) = event.socket_id {
+                    validate_socket_id(socket_id)?;
+                }
                 let data = serde_json::to_string(&event.payload).unwrap();
                 if data.len() > 10240 {
                     return Err(Error::EventDataTooLarge(data.len()));
@@ -365,6 +371,7 @@ impl<C: Connect + Clone + Send + Sync + 'static> Pusher<C> {
                     name: event.event.to_string(),
                     channel: event.channel.to_string(),
                     data,
+                    socket_id: event.socket_id.map(str::to_string),
                 })
             })
             .collect::<Result<Vec<_>, Error>>()?;
@@ -910,6 +917,7 @@ mod tests {
                 channel: "yolo",
                 event: "woot",
                 payload: "huh",
+                socket_id: None,
             })
             .collect();
         let res = pusher.trigger_batch(&events).await;
@@ -924,6 +932,7 @@ mod tests {
             channel: "yolo",
             event: "woot",
             payload: &data,
+            socket_id: None,
         }];
         let res = pusher.trigger_batch(&oversized).await;
         assert!(matches!(res, Err(Error::EventDataTooLarge(_))));
@@ -932,9 +941,28 @@ mod tests {
             channel: "w000^$$",
             event: "woot",
             payload: "huh",
+            socket_id: None,
         }];
         let res = pusher.trigger_batch(&bad_channel).await;
         assert!(matches!(res, Err(Error::InvalidChannelName(_))));
+
+        let bad_socket_id = [BatchEvent {
+            channel: "yolo",
+            event: "woot",
+            payload: "huh",
+            socket_id: Some("not-a-socket"),
+        }];
+        let res = pusher.trigger_batch(&bad_socket_id).await;
+        assert!(matches!(res, Err(Error::InvalidSocketId(_))));
+    }
+
+    #[tokio::test]
+    async fn test_empty_batch_sends_nothing() {
+        let pusher = PusherBuilder::new("id", "key", "secret")
+            .host("127.0.0.1:1")
+            .finalize();
+        let events: [BatchEvent<'_, ()>; 0] = [];
+        pusher.trigger_batch(&events).await.unwrap();
     }
 
     #[tokio::test]
