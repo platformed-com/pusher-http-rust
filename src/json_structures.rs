@@ -9,6 +9,30 @@ pub struct TriggerEventData {
     pub socket_id: Option<String>,
 }
 
+#[derive(Serialize)]
+pub struct TriggerBatchData {
+    pub batch: Vec<BatchEventData>,
+}
+
+#[derive(Serialize)]
+pub struct BatchEventData {
+    pub name: String,
+    pub channel: String,
+    pub data: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub socket_id: Option<String>,
+}
+
+/// One event of a [`Pusher::trigger_batch`](crate::Pusher::trigger_batch) call.
+pub struct BatchEvent<'a, S> {
+    pub channel: &'a str,
+    pub event: &'a str,
+    pub payload: S,
+    /// Excludes this connection from receiving the event, as
+    /// [`Pusher::trigger_exclusive`](crate::Pusher::trigger_exclusive) does.
+    pub socket_id: Option<&'a str>,
+}
+
 /// When querying the state of Pusher channels, you can pass this in to specify
 /// options.
 pub type QueryParameters = Vec<(String, String)>;
